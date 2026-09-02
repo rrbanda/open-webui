@@ -1,0 +1,96 @@
+# docker-compose.runtime-test.yaml
+#
+# Validates that the upstream image can be customized purely at runtime:
+#   - Environment variables for config
+#   - Volume-mounted custom.css and loader.js
+#   - External PostgreSQL for production-grade persistence
+#   - External Redis for multi-instance websocket support
+#
+# Usage:
+#   docker compose -f customization/docker-compose.runtime-test.yaml up -d
+#
+# This uses the UNMODIFIED upstream image -- no Dockerfile, no build step.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: openwebui
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openwebui"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - open-webui-data:/app/backend/data
+      # Runtime CSS/JS customization -- no image rebuild needed
+      - ./custom-assets/custom.css:/app/backend/open_webui/static/custom.css:ro
+      - ./custom-assets/loader.js:/app/backend/open_webui/static/loader.js:ro
+    environment:
+      # -- Database --
+      DATABASE_URL: postgresql://openwebui:changeme@postgres:5432/openwebui
+
+      # -- Redis for multi-instance websockets --
+      REDIS_URL: redis://redis:6379/0
+      WEBSOCKET_MANAGER: redis
+
+      # -- Identity --
+      WEBUI_NAME: "My Custom Platform"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:-please-change-this-to-a-random-value}"
+
+      # -- Auth --
+      ENABLE_SIGNUP: "true"
+      ENABLE_LOGIN_FORM: "true"
+      WEBUI_ADMIN_EMAIL: "admin@example.com"
+      WEBUI_ADMIN_PASSWORD: "admin"
+
+      # -- Feature flags --
+      ENABLE_PLUGINS: "true"
+      ENABLE_WEB_SEARCH: "false"
+      ENABLE_IMAGE_GENERATION: "false"
+      ENABLE_CHANNELS: "false"
+      ENABLE_NOTES: "false"
+      ENABLE_CALENDAR: "false"
+      ENABLE_AUTOMATIONS: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+
+      # -- Observability --
+      ENABLE_OTEL: "false"
+      GLOBAL_LOG_LEVEL: "INFO"
+
+      # -- Ollama (disable if not using) --
+      ENABLE_OLLAMA_API: "false"
+
+      # -- OpenAI-compatible provider example --
+      # OPENAI_API_BASE_URLS: "https://api.openai.com/v1"
+      # OPENAI_API_KEYS: "sk-your-key-here"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  open-webui-data:

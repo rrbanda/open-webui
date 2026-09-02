@@ -1509,7 +1509,7 @@ async def generate_chat_completion(
             system = params.pop('system', None)
 
             payload = apply_model_params_to_body_openai(params, payload)
-            if not bypass_system_prompt:
+            if not bypass_system_prompt and not getattr(request.state, 'agent_mode', False):
                 payload = await apply_system_prompt_to_body(system, payload, metadata, user)
 
         await check_model_access(user, model_info, bypass_filter)

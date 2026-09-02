@@ -1,0 +1,51 @@
+# docker-compose.derived-test.yaml
+#
+# Tests the derived image approach: builds FROM upstream, adds custom layers.
+#
+# Usage (from repo root):
+#   docker compose -f customization/derived-image/docker-compose.derived-test.yaml up -d --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: openwebui
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openwebui"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  open-webui:
+    build:
+      context: ../../
+      dockerfile: customization/derived-image/Dockerfile
+      args:
+        UPSTREAM_TAG: main
+    image: my-org/open-webui-custom:latest
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - open-webui-data:/app/backend/data
+    environment:
+      DATABASE_URL: postgresql://openwebui:changeme@postgres:5432/openwebui
+      WEBUI_NAME: "My Derived Platform"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:-please-change-this-to-a-random-value}"
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_SIGNUP: "true"
+      WEBUI_ADMIN_EMAIL: "admin@example.com"
+      WEBUI_ADMIN_PASSWORD: "admin"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  open-webui-data:

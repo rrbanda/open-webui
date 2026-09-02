@@ -1,0 +1,69 @@
+# LiteLLM Gateway Configuration
+#
+# Routes agent requests from Open WebUI to the correct backend.
+# Open WebUI connects to LiteLLM as a single OpenAI-compatible endpoint.
+#
+# Add/remove models by editing this file and restarting the litellm container.
+# Docs: https://docs.litellm.ai/docs/proxy/configs
+
+model_list:
+  # -------------------------------------------------------------------------
+  # LangGraph agents
+  # Docs: https://docs.litellm.ai/docs/providers/langgraph
+  # -------------------------------------------------------------------------
+  - model_name: langgraph-agent
+    litellm_params:
+      model: langgraph/agent
+      api_base: http://langgraph-server:2024
+      # api_key: os.environ/LANGGRAPH_API_KEY  # uncomment if needed
+
+  # -------------------------------------------------------------------------
+  # Google ADK agent (served via `adk api_server`, OpenAI-compatible)
+  # Docs: https://docs.litellm.ai/docs/tutorials/google_adk
+  # -------------------------------------------------------------------------
+  - model_name: adk-agent
+    litellm_params:
+      model: openai/adk-agent
+      api_base: http://adk-server:8080/v1
+      # api_key: os.environ/ADK_API_KEY  # uncomment if needed
+
+  # -------------------------------------------------------------------------
+  # Hermes agent (already OpenAI-compatible)
+  # -------------------------------------------------------------------------
+  - model_name: hermes-agent
+    litellm_params:
+      model: openai/hermes-3
+      api_base: http://hermes-server:8000/v1
+      api_key: os.environ/HERMES_API_KEY
+
+  # -------------------------------------------------------------------------
+  # Generic: any custom agent with an OpenAI-compatible API
+  # Duplicate this block for each additional agent backend.
+  # -------------------------------------------------------------------------
+  # - model_name: custom-agent
+  #   litellm_params:
+  #     model: openai/custom-model
+  #     api_base: http://custom-agent:8000/v1
+  #     api_key: os.environ/CUSTOM_AGENT_KEY
+
+  # -------------------------------------------------------------------------
+  # OCP Virt Migration Agent (VMware-to-OpenShift migration coordinator)
+  # Exposes POST /chat/completions only (no /models endpoint).
+  # LiteLLM advertises the model to Open WebUI on its behalf.
+  # -------------------------------------------------------------------------
+  - model_name: ocp-virt-migration-agent
+    litellm_params:
+      model: openai/app
+      api_base: https://ocp-virt-migration-agent-ocp-virt-agent.apps.ocp.qn6c5.sandbox1388.opentlc.com
+      api_key: not-needed
+
+# User identity forwarding from Open WebUI
+general_settings:
+  user_header_mappings:
+    - header_name: X-OpenWebUI-User-Id
+      litellm_user_role: internal_user
+    - header_name: X-OpenWebUI-User-Email
+      litellm_user_role: customer
+
+litellm_settings:
+  drop_params: true

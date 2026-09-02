@@ -2403,6 +2403,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     form_data = apply_params_to_form_data(form_data, model)
     log.debug('form_data: %s', form_data)
 
+    agent_mode = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('agent_mode', False)
+    metadata['agent_mode'] = agent_mode
+    if hasattr(request, 'state'):
+        request.state.agent_mode = agent_mode
+
     # Guided regeneration: extract before it reaches the LLM provider
     regeneration_prompt = form_data.pop('regeneration_prompt', None)
 
@@ -2498,7 +2503,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     form_data['messages'] = sanitize_tool_pairs(form_data['messages'])
 
     system_message = get_system_message(form_data.get('messages', []))
-    if system_message:  # Chat Controls/User Settings
+    if system_message and not agent_mode:  # Chat Controls/User Settings
         try:
             form_data = await apply_system_prompt_to_body(
                 system_message.get('content'), form_data, metadata, user, replace=True
@@ -2559,7 +2564,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             folder = None
 
         if folder and folder.data:
-            if 'system_prompt' in folder.data:
+            if 'system_prompt' in folder.data and not agent_mode:
                 form_data = await apply_system_prompt_to_body(folder.data['system_prompt'], form_data, metadata, user)
             if 'files' in folder.data:
                 if metadata.get('params', {}).get('function_calling') == 'legacy':
@@ -2576,7 +2581,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     user_message = get_last_user_message(form_data['messages'])
     model_knowledge = model.get('info', {}).get('meta', {}).get('knowledge', False)
 
-    if model_knowledge and metadata.get('params', {}).get('function_calling') == 'legacy':
+    if model_knowledge and not agent_mode and metadata.get('params', {}).get('function_calling') == 'legacy':
         await event_emitter(
             {
                 'type': 'status',
@@ -2618,12 +2623,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     payload_tools = form_data.get('tools', None)  # snapshot before filters
 
     # Process the form_data through the pipeline
-    try:
-        form_data = await process_pipeline_inlet_filter(request, form_data, user, models)
-    except Exception as e:
-        raise e
+    if not agent_mode:
+        try:
+            form_data = await process_pipeline_inlet_filter(request, form_data, user, models)
+        except Exception as e:
+            raise e
 
-    if ENABLE_PLUGINS:
+    if ENABLE_PLUGINS and not agent_mode:
         try:
             filter_functions = await get_filter_functions(request, model, metadata.get('filter_ids', []))
 
@@ -2640,7 +2646,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     features = form_data.pop('features', None) or {}
     extra_params['__features__'] = features
-    if features:
+    if features and not agent_mode:
         if 'voice' in features and features['voice']:
             if await Config.get('task.voice.prompt.enable'):
                 template = await Config.get('task.voice.prompt_template')
@@ -2767,7 +2773,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         and (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('builtin_tools', True)
     )
 
-    if skill_ids:
+    if skill_ids and not agent_mode:
         from open_webui.models.skills import Skills as SkillsModel
 
         accessible_skills = {s.id: s for s in await SkillsModel.get_skills(user_id=user.id, ids=skill_ids)}
@@ -2837,7 +2843,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # When the caller provides an explicit `tools` key in the request body,
     # skip all server-side tool resolution and pass the caller's tools through
     # unchanged.  Sending `tools: []` explicitly opts out of builtin injection.
-    if payload_tools is None:
+    # Agent mode also skips all tool resolution -- external agent handles tools.
+    if payload_tools is None and not agent_mode:
         # Server side tools
         tool_ids = metadata.get('tool_ids', None)
         # Client side tools
@@ -3042,7 +3049,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Check if file context extraction is enabled for this model (default True)
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
-    if file_context_enabled:
+    if file_context_enabled and not agent_mode:
         try:
             form_data, flags = await chat_completion_files_handler(request, form_data, extra_params, user)
             sources.extend(flags.get('sources', []))
@@ -3068,7 +3075,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     metadata['sources'] = sources[:] if sources else []
 
     # If context is not empty, insert it into the messages
-    if sources and prompt:
+    if sources and prompt and not agent_mode:
         form_data['messages'] = await apply_source_context_to_messages(request, form_data['messages'], sources, prompt)
 
     # If there are citations, add them to the data_items
@@ -4125,8 +4132,9 @@ async def non_streaming_chat_response_handler(response, ctx):
                         'output': response_output,
                         **({'usage': usage} if usage else {}),
                     }
-                    await outlet_filter_handler(ctx)
-                    await background_tasks_handler(ctx)
+                    if not metadata.get('agent_mode'):
+                        await outlet_filter_handler(ctx)
+                        await background_tasks_handler(ctx)
 
             response = build_response_object(response, merge_events_into_response(response_data, events))
         except Exception as e:
@@ -4157,7 +4165,7 @@ async def non_streaming_chat_response_handler(response, ctx):
     choices = response_data.get('choices', [])
     output = response_data.get('output')
     content = choices[0].get('message', {}).get('content') if choices else ''
-    if ENABLE_API_OUTLET_FILTERS and (content or output):
+    if ENABLE_API_OUTLET_FILTERS and (content or output) and not metadata.get('agent_mode'):
         usage = normalize_usage(response_data.get('usage', {}) or {})
         ctx['assistant_message'] = {
             **({'content': content} if content else {}),
@@ -5524,7 +5532,7 @@ async def streaming_chat_response_handler(response, ctx):
                         get_content_from_message(original_system_message) if original_system_message else None
                     )
 
-                while tool_calls and (
+                while tool_calls and not metadata.get('agent_mode') and (
                     max_tool_call_iterations is None or tool_call_iterations < max_tool_call_iterations
                 ):
                     tool_call_iterations += 1
@@ -5988,6 +5996,20 @@ async def streaming_chat_response_handler(response, ctx):
                     error_content = f'Tool-call limit reached ({max_tool_call_iterations} iterations).'
                     await emit_message_error(error_content)
 
+                # Agent mode: mark any pending function_call items as completed
+                # since the external agent already executed them. This transitions
+                # ToolCallDisplay from "Executing..." to the done state.
+                if metadata.get('agent_mode') and tool_calls:
+                    for item in output:
+                        if item.get('type') == 'function_call' and item.get('status') != 'completed':
+                            item['status'] = 'completed'
+                    await event_emitter(
+                        {
+                            'type': 'chat:completion',
+                            'data': {'output': full_output(), 'done': False},
+                        }
+                    )
+
                 if DETECT_CODE_INTERPRETER:
                     MAX_RETRIES = 5
                     retries = 0
@@ -6210,8 +6232,9 @@ async def streaming_chat_response_handler(response, ctx):
                     'output': current_output,
                     **({'usage': usage} if usage else {}),
                 }
-                await outlet_filter_handler(ctx)
-                await background_tasks_handler(ctx)
+                if not metadata.get('agent_mode'):
+                    await outlet_filter_handler(ctx)
+                    await background_tasks_handler(ctx)
             except asyncio.CancelledError:
                 log.warning('Task was cancelled!')
 
@@ -6308,7 +6331,7 @@ async def streaming_chat_response_handler(response, ctx):
                         update_assistant_message_from_stream(assistant_message, data)
                     yield data
 
-            if has_api_outlet_filters and assistant_message:
+            if has_api_outlet_filters and assistant_message and not metadata.get('agent_mode'):
                 ctx['assistant_message'] = assistant_message
                 await outlet_filter_handler(ctx)
 

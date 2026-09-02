@@ -1,0 +1,262 @@
+# docker-compose.sidecar.yaml
+#
+# Full sidecar + reverse proxy architecture for building an enhanced product
+# on top of the Open WebUI fork with Agent Mode support.
+#
+# Architecture:
+#   nginx (entry) -> Open WebUI (built from fork with agent_mode)
+#                 -> Custom API sidecar (custom endpoints)
+#   Open WebUI   -> LiteLLM Gateway (ADK/LangGraph/Hermes as OpenAI-compatible models)
+#                -> Custom MCP Server (LLM-callable custom tools)
+#                -> Pipelines (chat inlet/outlet filters)
+#
+# Usage:
+#   cd customization/sidecar-architecture
+#   docker compose -f docker-compose.sidecar.yaml up -d
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure
+  # ---------------------------------------------------------------------------
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: openwebui
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-changeme}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openwebui"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Reverse Proxy (entry point)
+  # ---------------------------------------------------------------------------
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${PUBLIC_PORT:-3000}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - open-webui
+      - custom-api
+
+  # ---------------------------------------------------------------------------
+  # Open WebUI (built from fork with agent_mode passthrough)
+  # ---------------------------------------------------------------------------
+
+  open-webui:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+    volumes:
+      - open-webui-data:/app/backend/data
+      - ../custom-assets/custom.css:/app/backend/open_webui/static/custom.css:ro
+      - ../custom-assets/loader.js:/app/backend/open_webui/static/loader.js:ro
+    environment:
+      # -- Database (external Postgres) --
+      DATABASE_URL: postgresql://openwebui:${DB_PASSWORD:-changeme}@postgres:5432/openwebui
+
+      # -- Redis (multi-instance ready) --
+      REDIS_URL: redis://redis:6379/0
+      WEBSOCKET_MANAGER: redis
+
+      # -- Branding (license-compliant co-brand: displays "AgentHive (Open WebUI)") --
+      WEBUI_NAME: "AgentHive"
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:-please-change-this-to-a-random-value}"
+
+      # -- Admin bootstrap --
+      WEBUI_ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@example.com}"
+      WEBUI_ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin}"
+
+      # -- Agent backends (LiteLLM as single OpenAI-compatible connection) --
+      OPENAI_API_BASE_URLS: "http://litellm:4000/v1"
+      OPENAI_API_KEYS: "${LITELLM_MASTER_KEY:-sk-litellm-key}"
+      OPENAI_API_CONFIGS: >-
+        {
+          "0": {
+            "enable": true,
+            "prefix_id": "agents",
+            "tags": [{"name": "Agent"}]
+          }
+        }
+
+      # -- Forward user identity to LiteLLM for per-user spend tracking --
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+
+      # -- MCP tool servers (registered at startup) --
+      TOOL_SERVER_CONNECTIONS: >-
+        [
+          {
+            "url": "http://custom-mcp-server:8001/sse",
+            "type": "mcp",
+            "auth_type": "none",
+            "config": {"enable": true},
+            "info": {"id": "custom-tools", "name": "Custom Tools", "description": "Organization-specific tools"}
+          }
+        ]
+
+      # -- Feature flags (minimal overhead for agent passthrough) --
+      ENABLE_PLUGINS: "true"
+      ENABLE_SIGNUP: "true"
+      ENABLE_LOGIN_FORM: "true"
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_COMMUNITY_SHARING: "false"
+      ENABLE_CHANNELS: "false"
+      ENABLE_NOTES: "true"
+      ENABLE_MEMORIES: "false"
+
+      # -- Agent mode: disable token-consuming background tasks --
+      ENABLE_AGENT_MODE_DEFAULT: "false"
+      ENABLE_TITLE_GENERATION: "false"
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+
+      # -- Enterprise prompt suggestions (replaces consumer defaults) --
+      DEFAULT_PROMPT_SUGGESTIONS: >-
+        [
+          {"title":["Check cluster readiness","for VM migration"],"content":"Check if my OpenShift cluster is ready for VMware VM migrations"},
+          {"title":["List VMware VMs","available for migration"],"content":"List all VMware virtual machines available for migration to OpenShift Virtualization"},
+          {"title":["Plan a migration batch","for production VMs"],"content":"Help me plan a migration batch for my VMware VMs to OpenShift Virtualization"},
+          {"title":["Assess migration risk","for a specific VM"],"content":"Evaluate the migration risk for my production database VM, considering OS, storage, and dependencies"}
+        ]
+
+      # -- Observability --
+      ENABLE_OTEL: "false"
+      GLOBAL_LOG_LEVEL: INFO
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Agent Gateway (LiteLLM)
+  # ---------------------------------------------------------------------------
+  # Production-grade OpenAI-compatible proxy that routes to multiple agent
+  # frameworks. Replaces the custom agent-gateway with a battle-tested solution.
+  # Docs: https://docs.litellm.ai/docs/tutorials/openweb_ui
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml
+    environment:
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-litellm-key}"
+      LITELLM_SALT_KEY: "${LITELLM_SALT_KEY:-salt-litellm}"
+      # Provider keys (only for providers that need them):
+      # LANGGRAPH_API_KEY: "${LANGGRAPH_API_KEY:-}"
+      HERMES_API_KEY: "${HERMES_API_KEY:-}"
+      # ADK_API_KEY: "${ADK_API_KEY:-}"
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Custom MCP Tool Server
+  # ---------------------------------------------------------------------------
+  # Exposes organization-specific tools that the LLM can call during chat.
+  # Registered via TOOL_SERVER_CONNECTIONS above.
+
+  custom-mcp-server:
+    build:
+      context: ./custom-mcp-server
+    environment:
+      DEPLOYMENT_ENV: production
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Pipelines (chat filter service)
+  # ---------------------------------------------------------------------------
+  # Intercepts chat requests (inlet) and responses (outlet).
+  # Use for compliance, logging, PII redaction, custom prompt injection.
+  # Register in Admin > Connections as an OpenAI-compatible URL.
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    volumes:
+      - pipelines_data:/app/pipelines
+      - ./pipelines/example-filter.py:/app/pipelines/example-filter.py:ro
+    environment:
+      PIPELINES_API_KEY: "${PIPELINES_API_KEY:-0p3n-w3bu!}"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Custom API Sidecar
+  # ---------------------------------------------------------------------------
+  # Your own FastAPI service for custom endpoints not covered by
+  # Open WebUI's plugin system. Routed via nginx at /api/custom/*.
+
+  custom-api:
+    build:
+      context: ./custom-api
+    environment:
+      OPENWEBUI_URL: http://open-webui:8080
+      OPENWEBUI_API_KEY: "${CUSTOM_API_OWUI_KEY:-}"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Agent Registration (GitOps)
+  # ---------------------------------------------------------------------------
+  # Registers agents with LiteLLM and creates workspace models in Open WebUI.
+  # Reads from agents.yaml -- one file to add/remove agents.
+  # Runs once on deploy, then exits.
+
+  agent-register:
+    image: curlimages/curl:latest
+    depends_on:
+      litellm:
+        condition: service_healthy
+    volumes:
+      - ./agent-registration/register.sh:/scripts/register.sh:ro
+      - ../agents.yaml:/config/agents.yaml:ro
+    environment:
+      LITELLM_URL: http://litellm:4000
+      LITELLM_KEY: "${LITELLM_MASTER_KEY:-sk-litellm-key}"
+    entrypoint: ["/bin/sh", "/scripts/register.sh", "/config/agents.yaml"]
+    restart: "no"
+
+  agent-seed-models:
+    image: curlimages/curl:latest
+    depends_on:
+      open-webui:
+        condition: service_started
+    volumes:
+      - ./agent-registration/seed-models.sh:/scripts/seed-models.sh:ro
+      - ../agents.yaml:/config/agents.yaml:ro
+    environment:
+      OWUI_URL: http://open-webui:8080
+      OWUI_KEY: "${OWUI_ADMIN_API_KEY:?Set OWUI_ADMIN_API_KEY for model seeding}"
+      PREFIX_ID: agents
+    entrypoint: ["/bin/sh", "/scripts/seed-models.sh", "/config/agents.yaml"]
+    restart: "no"
+
+volumes:
+  postgres_data:
+  open-webui-data:
+  pipelines_data:

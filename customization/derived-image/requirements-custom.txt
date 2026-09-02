@@ -1,0 +1,12 @@
+# Additional Python packages for custom Functions/Tools.
+# These are installed on top of the upstream image's dependencies.
+#
+# Example: if your custom Tool needs the Slack SDK or a specific library,
+# add it here instead of relying on Function frontmatter `requirements:` lines.
+#
+# Pinning versions is recommended for reproducible builds.
+
+# Example packages (uncomment as needed):
+# slack-sdk>=3.27.0
+# boto3>=1.34.0
+# httpx>=0.27.0

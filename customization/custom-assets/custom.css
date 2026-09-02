@@ -1,0 +1,39 @@
+/*
+ * Custom CSS overlay for Open WebUI
+ * Volume-mount this file at: /app/backend/open_webui/static/custom.css
+ *
+ * This file is loaded by the upstream image without any code changes.
+ * Use it to override colors, fonts, hide elements, or restyle components.
+ */
+
+:root {
+  --custom-primary: #2563eb;
+  --custom-sidebar-bg: #1e293b;
+}
+
+/* Example: override the sidebar background */
+#sidebar {
+  background-color: var(--custom-sidebar-bg) !important;
+}
+
+/* Example: hide the "Open WebUI" branding text while keeping layout intact */
+/* Uncomment the following to hide the name badge:
+.open-webui-name-badge {
+  visibility: hidden;
+}
+*/
+
+/* Example: custom font override */
+/*
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif !important;
+}
+*/
+
+/* Example: custom accent color for buttons */
+/*
+button.primary,
+.bg-primary {
+  background-color: var(--custom-primary) !important;
+}
+*/

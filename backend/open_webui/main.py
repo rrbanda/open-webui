@@ -1445,7 +1445,7 @@ async def chat_completion(
                             log.debug('Error inserting chat files: %s', e)
                             pass
 
-                    if initial_title_generation is not None and all_assistant_ids:
+                    if initial_title_generation is not None and all_assistant_ids and not model_capabilities.get('agent_mode'):
                         title_metadata = {
                             **metadata,
                             'message_id': all_assistant_ids[0],

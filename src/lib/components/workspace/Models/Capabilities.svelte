@@ -62,6 +62,12 @@
 			description: $i18n.t(
 				'Automatically inject system tools in native function calling mode (e.g., timestamps, memory, chat history, notes, etc.)'
 			)
+		},
+		agent_mode: {
+			label: $i18n.t('Agent Mode'),
+			description: $i18n.t(
+				'Passthrough mode for external agents. Disables all prompt injections, tool resolution, RAG, memory, and background tasks to eliminate token overhead. Use when the model is backed by an external agent that handles its own tools and context.'
+			)
 		}
 	};
 

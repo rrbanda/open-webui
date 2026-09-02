@@ -1,0 +1,23 @@
+# AgentHive Agent Registry
+#
+# Single source of truth for all agent definitions.
+# Used by:
+#   - register.sh   --> registers agents with LiteLLM gateway
+#   - seed-models.sh --> creates workspace models in Open WebUI with agent_mode
+#   - LiteLLM config.yaml --> static entries for agents with stable URLs
+#
+# Add a new agent: append an entry below, commit, and deploy.
+# Remove an agent: delete the entry, commit, and deploy.
+
+agents:
+  - name: ocp-virt-migration-agent
+    model_id: app
+    url: https://ocp-virt-migration-agent-ocp-virt-agent.apps.ocp.qn6c5.sandbox1388.opentlc.com
+    description: "VMware-to-OpenShift Virtualization migration coordinator"
+    agent_mode: true
+
+  # - name: another-adk-agent
+  #   model_id: app
+  #   url: http://another-agent:8080
+  #   description: "Another ADK agent"
+  #   agent_mode: true
